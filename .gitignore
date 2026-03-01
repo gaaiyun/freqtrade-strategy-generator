@@ -1,0 +1,8 @@
+.env
+*.pyc
+__pycache__/
+*.log
+generated_strategies/
+*.pth
+.venv/
+venv/
