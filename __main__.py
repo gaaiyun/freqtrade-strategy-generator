@@ -34,6 +34,7 @@ def cmd_generate(args) -> int:
             description=args.desc,
             timeframe=args.timeframe,
             stoploss_pct=args.stoploss,
+            temperature=args.temperature,
         )
     except LLMNotAvailable as e:
         sys.stderr.write(f"[error] {e}\n")
@@ -82,16 +83,19 @@ def cmd_validate(args) -> int:
 
 def cmd_list_backends(args) -> int:
     import os as _os
-    rows = [
-        ("openai",    "gpt-4o-mini",                "OPENAI_API_KEY"),
-        ("anthropic", "claude-3-5-haiku-20241022",  "ANTHROPIC_API_KEY"),
-        ("deepseek",  "deepseek-chat",              "DEEPSEEK_API_KEY"),
-    ]
-    print(f"{'backend':<12} {'default model':<32} {'env var'}")
-    print("-" * 70)
-    for b, m, e in rows:
-        cfg = "yes" if _os.getenv(e) else "no"
-        print(f"{b:<12} {m:<32} {e}  (configured: {cfg})")
+    key_env = {
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+    }
+    print(f"{'backend':<12} {'resolved model':<26} {'key env var':<20} configured")
+    print("-" * 78)
+    for b in ("openai", "anthropic", "deepseek"):
+        # 用真实解析逻辑（会读 *_MODEL 环境变量），表里不会和实际跑的模型对不上
+        model = LLMClient(backend=b, api_key="_probe_")._default_model(b)
+        e = key_env[b]
+        cfg = "yes" if (_os.getenv(e) or (b == "deepseek" and _os.getenv("OPENAI_API_KEY"))) else "no"
+        print(f"{b:<12} {model:<26} {e:<20} {cfg}")
     return 0
 
 
@@ -108,6 +112,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--stoploss", type=float, default=0.05,
                     help="止损百分比（正数，会自动加负号）")
     sp.add_argument("--backend", default="deepseek", choices=common_backends)
+    sp.add_argument("--temperature", type=float, default=None,
+                    help="LLM 采样温度（不传用 0.2；想要同一描述多个变体可调高到 0.7-1.0）")
     sp.add_argument("--allow-invalid", action="store_true",
                     help="即使校验不通过也保存输出文件")
     sp.add_argument("-o", "--output")

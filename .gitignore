@@ -3,6 +3,8 @@
 __pycache__/
 *.log
 generated_strategies/
+# CLI 默认把生成的策略写到这里，属于用户产物不入库
+strategies/
 *.pth
 .venv/
 venv/

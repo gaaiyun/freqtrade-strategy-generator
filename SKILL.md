@@ -44,6 +44,9 @@ python __main__.py list-backends
 | FT005 | 误用聚宽 API（get_price 等） |
 | FT006 | stoploss 是正数 |
 | FT007 | 缺 freqtrade import |
+| FT008 | minimal_roi 缺 "0" 键（freqtrade 会崩） |
+| FT009 | minimal_roi 键写成整数而非字符串 |
+| FT010 | 用了已废弃的 v2 接口 populate_buy_trend / populate_sell_trend |
 
 ## 依赖
 

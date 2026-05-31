@@ -67,6 +67,36 @@ def test_llm_client_explicit_model_overrides_default():
     assert c.model == "gpt-4o"
 
 
+def test_llm_client_deepseek_model_from_env(monkeypatch):
+    """DEEPSEEK_MODEL 环境变量应覆盖内置默认 deepseek-chat。"""
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    c = LLMClient(backend="deepseek", api_key="x")
+    assert c.model == "deepseek-v4-flash"
+
+
+def test_llm_client_deepseek_base_url_from_env(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    c = LLMClient(backend="deepseek", api_key="x")
+    assert c.base_url == "https://api.deepseek.com"
+
+
+def test_llm_client_explicit_args_override_env(monkeypatch):
+    """显式传参优先级高于环境变量。"""
+    monkeypatch.setenv("DEEPSEEK_MODEL", "from-env")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://env.example")
+    c = LLMClient(backend="deepseek", api_key="x",
+                  model="explicit-model", base_url="https://explicit.example")
+    assert c.model == "explicit-model"
+    assert c.base_url == "https://explicit.example"
+
+
+def test_llm_client_openai_base_url_from_env(monkeypatch):
+    """OpenAI backend 也尊重 OPENAI_BASE_URL（自建网关/代理常用）。"""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+    c = LLMClient(backend="openai", api_key="x")
+    assert c.base_url == "https://gateway.example/v1"
+
+
 # --- _strip_code_fences -------------------------------------------------------
 
 def test_strip_code_fences_python_block():
@@ -198,3 +228,34 @@ def test_generate_preserves_raw_llm_response():
     result = g.generate(name="X", description="foo")
     assert result.raw_llm_response == "```python\nfoo\n```"
     assert result.code == "foo"
+
+
+# --- temperature 透传 ---------------------------------------------------------
+
+def test_llm_client_default_temperature():
+    c = LLMClient(backend="deepseek", api_key="x")
+    assert c.temperature == 0.2
+
+
+def test_llm_client_temperature_override():
+    c = LLMClient(backend="deepseek", api_key="x", temperature=0.9)
+    assert c.temperature == 0.9
+
+
+def test_generate_passes_temperature_to_chat():
+    """generate(temperature=) 应临时覆盖 client 默认值传给 chat。"""
+    client = _mock_client()
+    g = LLMStrategyGenerator(llm_client=client)
+    g.generate(name="X", description="foo", temperature=0.7)
+    # chat 被调用时 client.temperature 应已是 0.7
+    assert client.chat.call_count == 1
+    # 生成结束后恢复默认（不污染后续调用）
+    assert client.temperature == 0.2
+
+
+def test_generate_temperature_none_keeps_client_default():
+    client = _mock_client()
+    client.temperature = 0.5
+    g = LLMStrategyGenerator(llm_client=client)
+    g.generate(name="X", description="foo")  # 不传 temperature
+    assert client.temperature == 0.5

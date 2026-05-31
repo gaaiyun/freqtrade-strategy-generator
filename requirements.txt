@@ -1,5 +1,8 @@
+# 核心功能（v1 模板生成 + 校验器）零第三方依赖，只要 Python 3.11+。
+#
+# 用 v2 的 LLM 生成时，按 backend 装其中一个 SDK：
+#   openai backend / deepseek backend  -> openai
+#   anthropic backend                  -> anthropic
+# 两个都是 import 时才加载（缺了不影响 validate / v1）。
 openai>=1.0.0
 anthropic>=0.18.0
-pyyaml>=6.0.0
-jinja2>=3.1.0
-python-dotenv>=1.0.0

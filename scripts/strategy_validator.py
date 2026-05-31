@@ -53,6 +53,12 @@ _REQUIRED_METHODS = {
     "populate_exit_trend",
 }
 
+# 已废弃的 v2 接口方法 → 现在 v3 用的新方法
+_DEPRECATED_METHODS = {
+    "populate_buy_trend": "populate_entry_trend",
+    "populate_sell_trend": "populate_exit_trend",
+}
+
 _REQUIRED_CLASS_ATTRS = {"timeframe", "stoploss", "minimal_roi"}
 
 _HALLUCINATED_APIS = {
@@ -95,12 +101,25 @@ def validate(code: str) -> ValidationReport:
                    "找不到 IStrategy 子类。Freqtrade 策略必须 class MyStrategy(IStrategy):")
         return report
 
-    # 3. 检查必需方法
+    # 3. 检查必需方法（同步/异步都算）
     methods_found = {
         item.name for item in strategy_class.body
-        if isinstance(item, ast.FunctionDef)
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    missing = _REQUIRED_METHODS - methods_found
+
+    # 3a. 先看是不是用了已废弃的 v2 接口（populate_buy/sell_trend）。
+    #     如果用了，给针对性的 FT010，并把对应的新方法从"缺失"里豁免，
+    #     免得又泛泛报一遍 FT002 让人摸不着头脑。
+    suppress_missing = set()
+    for old_name, new_name in _DEPRECATED_METHODS.items():
+        if old_name in methods_found:
+            report.add("error", "FT010",
+                       f"用了已废弃的 v2 接口方法 {old_name}；"
+                       f"Freqtrade v3（INTERFACE_VERSION=3）应改名为 {new_name}",
+                       line=strategy_class.lineno)
+            suppress_missing.add(new_name)
+
+    missing = _REQUIRED_METHODS - methods_found - suppress_missing
     for m in missing:
         report.add("error", "FT002",
                    f"缺必需方法 {m}（IStrategy 三个核心方法之一）",
@@ -129,8 +148,8 @@ def validate(code: str) -> ValidationReport:
     for i, line in enumerate(code.splitlines(), start=1):
         if iloc_pattern.search(line):
             report.add("warning", "FT004",
-                       f"嫌疑未来函数：直接读 dataframe.iloc[-1] 在 Freqtrade 是合法但容易"
-                       f"误用；应该用整列条件赋值 dataframe.loc[condition, 'enter_long']=1",
+                       "嫌疑未来函数：直接读 dataframe.iloc[-1] 在 Freqtrade 是合法但容易"
+                       "误用；应该用整列条件赋值 dataframe.loc[condition, 'enter_long']=1",
                        line=i)
 
     # 6. 检查不该出现的聚宽 API
@@ -142,20 +161,62 @@ def validate(code: str) -> ValidationReport:
                            line=i)
                 break
 
-    # 7. 检查 stoploss 是负数
+    # 7. 检查 stoploss 是负数（Assign 和带注解的 AnnAssign 都查）
+    def _check_stoploss(value: ast.expr, lineno: int) -> None:
+        if isinstance(value, ast.UnaryOp) and isinstance(value.op, ast.USub):
+            return  # -0.05，OK
+        if (isinstance(value, ast.Constant)
+                and isinstance(value.value, (int, float))
+                and not isinstance(value.value, bool)
+                and value.value >= 0):
+            report.add("error", "FT006",
+                       f"stoploss 必须是负数（如 -0.05 表示 -5%），实际 {value.value}",
+                       line=lineno)
+
+    # 8. 检查 minimal_roi：必须是含 "0" 键的字面量 dict，键应为字符串
+    def _check_minimal_roi(value: ast.expr, lineno: int) -> None:
+        if not isinstance(value, ast.Dict):
+            return  # 用变量/函数构造的，静态判断不了，跳过
+        key_consts = [
+            k.value for k in value.keys
+            if isinstance(k, ast.Constant)
+        ]
+        has_int_key = any(
+            isinstance(k, int) and not isinstance(k, bool) for k in key_consts
+        )
+        if has_int_key:
+            report.add("warning", "FT009",
+                       'minimal_roi 的键应是字符串分钟数（如 "0" / "30"），'
+                       "不要写成整数 {0: ...}；Freqtrade 约定用字符串键",
+                       line=lineno)
+        # "0" 或 0 都算有零键（freqtrade 内部 int(key) 归一化）
+        has_zero_key = any(
+            (isinstance(k, str) and k.strip() == "0")
+            or (isinstance(k, int) and not isinstance(k, bool) and k == 0)
+            for k in key_consts
+        )
+        if value.keys and not has_zero_key:
+            report.add("error", "FT008",
+                       'minimal_roi 缺 "0" 键；没有它 Freqtrade 在 ROI 检查时'
+                       "会 max() 空列表崩溃（见 freqtrade#1633）",
+                       line=lineno)
+
     for item in strategy_class.body:
         if isinstance(item, ast.Assign):
             for target in item.targets:
                 if isinstance(target, ast.Name) and target.id == "stoploss":
-                    val = item.value
-                    if isinstance(val, ast.UnaryOp) and isinstance(val.op, ast.USub):
-                        pass  # 是负数 -0.05
-                    elif isinstance(val, ast.Constant) and isinstance(val.value, (int, float)) and val.value >= 0:
-                        report.add("error", "FT006",
-                                   f"stoploss 必须是负数（如 -0.05 表示 -5%），实际 {val.value}",
-                                   line=item.lineno)
+                    _check_stoploss(item.value, item.lineno)
+                elif isinstance(target, ast.Name) and target.id == "minimal_roi":
+                    _check_minimal_roi(item.value, item.lineno)
+        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            if item.value is None:
+                continue
+            if item.target.id == "stoploss":
+                _check_stoploss(item.value, item.lineno)
+            elif item.target.id == "minimal_roi":
+                _check_minimal_roi(item.value, item.lineno)
 
-    # 8. 检查必要 import：必须 from freqtrade.* 或 import freqtrade*
+    # 9. 检查必要 import：必须 from freqtrade.* 或 import freqtrade*
     has_freqtrade_import = False
     for stmt in ast.walk(tree):
         if isinstance(stmt, ast.ImportFrom):

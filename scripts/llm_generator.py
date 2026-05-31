@@ -75,9 +75,11 @@ class LLMClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         timeout: float = 60.0,
+        temperature: float = 0.2,
     ):
         self.backend = backend
         self.timeout = timeout
+        self.temperature = temperature
         self.api_key = api_key or self._default_key(backend)
         self.base_url = base_url or self._default_base_url(backend)
         self.model = model or self._default_model(backend)
@@ -92,10 +94,25 @@ class LLMClient:
 
     @staticmethod
     def _default_base_url(backend: LLMBackend) -> Optional[str]:
+        # 环境变量优先（自建网关/代理、或 deepseek 换 endpoint 时不用改代码）
+        env = {
+            "openai": "OPENAI_BASE_URL",
+            "anthropic": "ANTHROPIC_BASE_URL",
+            "deepseek": "DEEPSEEK_BASE_URL",
+        }.get(backend)
+        if env and os.getenv(env):
+            return os.getenv(env)
         return {"deepseek": "https://api.deepseek.com/v1"}.get(backend)
 
     @staticmethod
     def _default_model(backend: LLMBackend) -> str:
+        env = {
+            "openai": "OPENAI_MODEL",
+            "anthropic": "ANTHROPIC_MODEL",
+            "deepseek": "DEEPSEEK_MODEL",
+        }.get(backend)
+        if env and os.getenv(env):
+            return os.getenv(env)  # type: ignore[return-value]
         return {
             "openai": "gpt-4o-mini",
             "anthropic": "claude-3-5-haiku-20241022",
@@ -127,7 +144,7 @@ class LLMClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            temperature=0.2,
+            temperature=self.temperature,
         )
         return resp.choices[0].message.content or ""
 
@@ -136,11 +153,14 @@ class LLMClient:
             from anthropic import Anthropic
         except ImportError as e:
             raise LLMNotAvailable("缺 anthropic SDK：pip install anthropic") from e
-        client = Anthropic(api_key=self.api_key, timeout=self.timeout)
+        kwargs = {"api_key": self.api_key, "timeout": self.timeout}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        client = Anthropic(**kwargs)
         resp = client.messages.create(
             model=self.model,
             max_tokens=4096,
-            temperature=0.2,
+            temperature=self.temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -170,6 +190,7 @@ class LLMStrategyGenerator:
         description: str,
         timeframe: Timeframe = "5m",
         stoploss_pct: float = 0.05,
+        temperature: Optional[float] = None,
     ) -> GeneratedStrategy:
         if not self.llm_client.is_available():
             raise LLMNotAvailable(
@@ -190,7 +211,14 @@ class LLMStrategyGenerator:
             f"按 system message 的要求输出完整 IStrategy 代码。"
         )
 
-        raw = self.llm_client.chat(SYSTEM_PROMPT, user_prompt)
+        # temperature 仅本次调用临时覆盖，结束后恢复，不污染复用的 client
+        prev_temp = self.llm_client.temperature
+        if temperature is not None:
+            self.llm_client.temperature = temperature
+        try:
+            raw = self.llm_client.chat(SYSTEM_PROMPT, user_prompt)
+        finally:
+            self.llm_client.temperature = prev_temp
         code = _strip_code_fences(raw)
 
         return GeneratedStrategy(
