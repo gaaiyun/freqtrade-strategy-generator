@@ -251,6 +251,25 @@ def test_ft006_negative_stoploss_ok():
     assert not any(i.code == "FT006" for i in report.errors)
 
 
+# --- FT006 stoploss 注解赋值也要查 -------------------------------------------
+
+def test_ft006_positive_stoploss_annotated():
+    """stoploss: float = 0.05 这种带注解的正数也得报。"""
+    bad = """from freqtrade.strategy import IStrategy
+
+class S(IStrategy):
+    timeframe = "5m"
+    stoploss: float = 0.05
+    minimal_roi = {"0": 0.05}
+
+    def populate_indicators(self, dataframe, metadata): return dataframe
+    def populate_entry_trend(self, dataframe, metadata): return dataframe
+    def populate_exit_trend(self, dataframe, metadata): return dataframe
+"""
+    report = validate(bad)
+    assert any(i.code == "FT006" for i in report.errors)
+
+
 # --- FT007 缺 freqtrade import ----------------------------------------------
 
 def test_ft007_missing_freqtrade_import():
@@ -270,6 +289,101 @@ class S2(IStrategy):
 """
     report = validate(bad)
     assert any(i.code == "FT007" for i in report.warnings)
+
+
+# --- FT008 minimal_roi 缺 "0" 键 ---------------------------------------------
+
+def test_ft008_minimal_roi_missing_zero_key():
+    """minimal_roi 没有 "0" 键，freqtrade 在 ROI 检查时 max() 空列表会崩。"""
+    bad = """from freqtrade.strategy import IStrategy
+
+class S(IStrategy):
+    timeframe = "5m"
+    stoploss = -0.05
+    minimal_roi = {"30": 0.02, "60": 0.01}
+
+    def populate_indicators(self, dataframe, metadata): return dataframe
+    def populate_entry_trend(self, dataframe, metadata): return dataframe
+    def populate_exit_trend(self, dataframe, metadata): return dataframe
+"""
+    report = validate(bad)
+    assert any(i.code == "FT008" for i in report.errors)
+
+
+def test_ft008_minimal_roi_with_zero_key_ok():
+    report = validate(VALID_CODE)  # minimal_roi = {"0": 0.05}
+    assert not any(i.code == "FT008" for i in report.issues)
+
+
+def test_ft008_skipped_when_roi_not_a_literal_dict():
+    """minimal_roi 用变量/函数构造时无法静态判断，不应误报 FT008。"""
+    code = """from freqtrade.strategy import IStrategy
+
+def _build_roi():
+    return {"0": 0.05}
+
+class S(IStrategy):
+    timeframe = "5m"
+    stoploss = -0.05
+    minimal_roi = _build_roi()
+
+    def populate_indicators(self, dataframe, metadata): return dataframe
+    def populate_entry_trend(self, dataframe, metadata): return dataframe
+    def populate_exit_trend(self, dataframe, metadata): return dataframe
+"""
+    report = validate(code)
+    assert not any(i.code == "FT008" for i in report.issues)
+
+
+# --- FT009 minimal_roi 键必须是字符串 ----------------------------------------
+
+def test_ft009_minimal_roi_int_keys():
+    """LLM 常写成 {0: .., 30: ..}，freqtrade 约定 key 是字符串分钟数。"""
+    bad = """from freqtrade.strategy import IStrategy
+
+class S(IStrategy):
+    timeframe = "5m"
+    stoploss = -0.05
+    minimal_roi = {0: 0.05, 30: 0.02}
+
+    def populate_indicators(self, dataframe, metadata): return dataframe
+    def populate_entry_trend(self, dataframe, metadata): return dataframe
+    def populate_exit_trend(self, dataframe, metadata): return dataframe
+"""
+    report = validate(bad)
+    assert any(i.code == "FT009" for i in report.warnings)
+
+
+def test_ft009_string_keys_ok():
+    report = validate(VALID_CODE)
+    assert not any(i.code == "FT009" for i in report.issues)
+
+
+# --- FT010 用了已废弃的 v2 接口（populate_buy/sell_trend）---------------------
+
+def test_ft010_deprecated_buy_sell_interface():
+    """老接口 populate_buy_trend / populate_sell_trend：给针对性提示，而非泛泛 FT002。"""
+    bad = """from freqtrade.strategy import IStrategy
+
+class S(IStrategy):
+    timeframe = "5m"
+    stoploss = -0.05
+    minimal_roi = {"0": 0.05}
+
+    def populate_indicators(self, dataframe, metadata): return dataframe
+    def populate_buy_trend(self, dataframe, metadata): return dataframe
+    def populate_sell_trend(self, dataframe, metadata): return dataframe
+"""
+    report = validate(bad)
+    codes = {i.code for i in report.errors}
+    assert "FT010" in codes
+    # 给了 FT010 针对性提示后，不应该再为 entry/exit 重复报 FT002
+    assert "FT002" not in codes
+
+
+def test_ft010_not_triggered_for_correct_interface():
+    report = validate(VALID_CODE)
+    assert not any(i.code == "FT010" for i in report.issues)
 
 
 # --- render_report ------------------------------------------------------------
